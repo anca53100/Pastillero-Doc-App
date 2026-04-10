@@ -1,0 +1,71 @@
+const int IN1 = 8;
+const int IN2 = 9;
+const int IN3 = 10;
+const int IN4 = 11;
+
+// Cambie este valor hasta que vea que avanza "aprox" un hueco
+int pasosPorHueco = 34;
+
+// Cantidad de huecos que quiere recorrer
+int totalHuecos = 30;
+
+void setup() {
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+}
+
+void loop() {
+  for (int i = 0; i < totalHuecos; i++) {
+    girarHorario(pasosPorHueco);
+    delay(4000); // pausa de 4 segundos en cada hueco
+  }
+
+  delay(8000); // espera 8 segundos al terminar la vuelta
+}
+
+void paso1() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void paso2() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void paso3() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
+
+void paso4() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+}
+
+void apagarMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void girarHorario(int pasos) {
+  for (int i = 0; i < pasos; i++) {
+    paso1(); delay(3);
+    paso2(); delay(3);
+    paso3(); delay(3);
+    paso4(); delay(3);
+  }
+  apagarMotor();
+}
