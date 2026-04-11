@@ -876,7 +876,7 @@ onPressed: () {
 Navigator.push(
 context,
 MaterialPageRoute(
-builder: (_) => const PatientHomePage(),
+builder: (_) => PatientHomePage(usuario: usuario),
 ),
 );
 },
@@ -1149,10 +1149,15 @@ fontWeight: FontWeight.w700,
 }
 
 class PatientHomePage extends StatefulWidget {
-const PatientHomePage({super.key});
+  final AppUser usuario;
 
-@override
-State<PatientHomePage> createState() => _PatientHomePageState();
+  const PatientHomePage({
+    super.key,
+    required this.usuario,
+  });
+
+  @override
+  State<PatientHomePage> createState() => _PatientHomePageState();
 }
 
 class _PatientHomePageState extends State<PatientHomePage> {
@@ -1585,21 +1590,22 @@ Future<void> confirmarProximaToma() async {
 }
 
 Widget buildContenido() {
-switch (currentIndex) {
-case 0:
-return PatientDashboardContent(
-compartimientos: compartimientos,
-medicamentosPorCompartimiento: medicamentosPorCompartimiento,
-onAgregarCompartimiento: agregarCompartimiento,
-onEliminarCompartimiento: eliminarCompartimiento,
-medicamentosProximaToma:
-obtenerMedicamentosProximaToma().map((e) => e.value).toList(),
-fechaProximaToma: obtenerFechaProximaToma(),
-puedeConfirmarToma:
-puedeConfirmarProximaToma() &&
-hayPastillasSuficientesParaProximaToma(),
-onConfirmarProximaToma: confirmarProximaToma,
-);
+  switch (currentIndex) {
+    case 0:
+      return PatientDashboardContent(
+        nombrePaciente: widget.usuario.nombre,
+        compartimientos: compartimientos,
+        medicamentosPorCompartimiento: medicamentosPorCompartimiento,
+        onAgregarCompartimiento: agregarCompartimiento,
+        onEliminarCompartimiento: eliminarCompartimiento,
+        medicamentosProximaToma:
+            obtenerMedicamentosProximaToma().map((e) => e.value).toList(),
+        fechaProximaToma: obtenerFechaProximaToma(),
+        puedeConfirmarToma:
+            puedeConfirmarProximaToma() &&
+            hayPastillasSuficientesParaProximaToma(),
+        onConfirmarProximaToma: confirmarProximaToma,
+      );
 case 1:
 return PatientMedicationsPage(
 compartimientos: compartimientos,
@@ -1762,96 +1768,98 @@ required this.label,
 }
 
 class PatientDashboardContent extends StatelessWidget {
-final List<int> compartimientos;
-final Map<int, MedicationData?> medicamentosPorCompartimiento;
-final VoidCallback onAgregarCompartimiento;
-final Function(int) onEliminarCompartimiento;
-final List<MedicationData> medicamentosProximaToma;
-final DateTime? fechaProximaToma;
-final bool puedeConfirmarToma;
-final VoidCallback onConfirmarProximaToma;
+  final String nombrePaciente;
+  final List<int> compartimientos;
+  final Map<int, MedicationData?> medicamentosPorCompartimiento;
+  final VoidCallback onAgregarCompartimiento;
+  final Function(int) onEliminarCompartimiento;
+  final List<MedicationData> medicamentosProximaToma;
+  final DateTime? fechaProximaToma;
+  final bool puedeConfirmarToma;
+  final VoidCallback onConfirmarProximaToma;
 
-const PatientDashboardContent({
-super.key,
-required this.compartimientos,
-required this.medicamentosPorCompartimiento,
-required this.onAgregarCompartimiento,
-required this.onEliminarCompartimiento,
-required this.medicamentosProximaToma,
-required this.fechaProximaToma,
-required this.puedeConfirmarToma,
-required this.onConfirmarProximaToma,
-});
+  const PatientDashboardContent({
+    super.key,
+    required this.nombrePaciente,
+    required this.compartimientos,
+    required this.medicamentosPorCompartimiento,
+    required this.onAgregarCompartimiento,
+    required this.onEliminarCompartimiento,
+    required this.medicamentosProximaToma,
+    required this.fechaProximaToma,
+    required this.puedeConfirmarToma,
+    required this.onConfirmarProximaToma,
+  });
 
-@override
-Widget build(BuildContext context) {
-return SingleChildScrollView(
-padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
-child: Column(
-crossAxisAlignment: CrossAxisAlignment.start,
-children: [
-const TopGreeting(
-saludo: 'Buenos días,',
-nombre: 'Don Carlos',
-),
-const SizedBox(height: 22),
-NextDoseCard(
-medicamentos: medicamentosProximaToma,
-fechaProximaToma: fechaProximaToma,
-puedeConfirmarToma: puedeConfirmarToma,
-onConfirmarToma: onConfirmarProximaToma,
-),
-const SizedBox(height: 22),
-Row(
-mainAxisAlignment: MainAxisAlignment.spaceBetween,
-children: [
-const Text(
-'COMPARTIMIENTOS',
-style: TextStyle(
-fontSize: 12,
-letterSpacing: 0.6,
-fontWeight: FontWeight.w600,
-color: Color(0xFF333333),
-),
-),
-TextButton.icon(
-onPressed: onAgregarCompartimiento,
-icon: const Icon(Icons.add, size: 18),
-label: const Text('Agregar'),
-style: TextButton.styleFrom(
-foregroundColor: Colors.black,
-padding: EdgeInsets.zero,
-),
-),
-],
-),
-const SizedBox(height: 12),
-GridView.builder(
-itemCount: compartimientos.length,
-shrinkWrap: true,
-physics: const NeverScrollableScrollPhysics(),
-gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-crossAxisCount: 2,
-crossAxisSpacing: 16,
-mainAxisSpacing: 16,
-childAspectRatio: 1.08,
-),
-itemBuilder: (context, index) {
-final numero = compartimientos[index];
-final medicamento = medicamentosPorCompartimiento[numero];
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TopGreeting(
+            saludo: 'Buenos días,',
+            nombre: nombrePaciente,
+          ),
+          const SizedBox(height: 22),
+          NextDoseCard(
+            medicamentos: medicamentosProximaToma,
+            fechaProximaToma: fechaProximaToma,
+            puedeConfirmarToma: puedeConfirmarToma,
+            onConfirmarToma: onConfirmarProximaToma,
+          ),
+          const SizedBox(height: 22),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'COMPARTIMIENTOS',
+                style: TextStyle(
+                  fontSize: 12,
+                  letterSpacing: 0.6,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF333333),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: onAgregarCompartimiento,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Agregar'),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.black,
+                  padding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          GridView.builder(
+            itemCount: compartimientos.length,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 16,
+              childAspectRatio: 1.08,
+            ),
+            itemBuilder: (context, index) {
+              final numero = compartimientos[index];
+              final medicamento = medicamentosPorCompartimiento[numero];
 
-return CompartmentCard(
-numero: numero,
-medicamento: medicamento,
-sePuedeEliminar: numero > 3,
-onDelete: () => onEliminarCompartimiento(numero),
-);
-},
-),
-],
-),
-);
-}
+              return CompartmentCard(
+                numero: numero,
+                medicamento: medicamento,
+                sePuedeEliminar: numero > 3,
+                onDelete: () => onEliminarCompartimiento(numero),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class PatientMedicationsPage extends StatelessWidget {
