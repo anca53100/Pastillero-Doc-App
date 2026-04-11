@@ -1,0 +1,378 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+#include <time.h>
+
+// ===== WIFI =====
+const char* ssid = "BRUNO";
+const char* password = "notengoidea";
+
+// ===== MOTOR ULN2003 =====
+const int IN1 = 18;
+const int IN2 = 19;
+const int IN3 = 21;
+const int IN4 = 22;
+
+// ===== SERVIDOR =====
+WebServer server(80);
+
+// ===== CONFIG GENERAL =====
+const int MAX_COMPARTIMIENTOS = 10;
+
+// ===== ESTRUCTURA DE DATOS =====
+struct ProgramacionMedicamento {
+  bool activo = false;
+  int compartimiento = 0;
+  String nombre = "";
+  int cantidadPastillas = 1;
+  int frecuenciaHoras = 4;
+  int totalPastillasCargadas = 0;
+  int pastillasRestantes = 0;
+  int horaBase = 0;
+  int minutoBase = 0;
+  long ultimoEpochDispensado = -1;
+};
+
+ProgramacionMedicamento meds[MAX_COMPARTIMIENTOS + 1];
+
+// ===== SECUENCIA MOTOR 28BYJ-48 + ULN2003 =====
+const int stepsSequence[8][4] = {
+  {1, 0, 0, 0},
+  {1, 1, 0, 0},
+  {0, 1, 0, 0},
+  {0, 1, 1, 0},
+  {0, 0, 1, 0},
+  {0, 0, 1, 1},
+  {0, 0, 0, 1},
+  {1, 0, 0, 1}
+};
+
+void aplicarPaso(int a, int b, int c, int d) {
+  digitalWrite(IN1, a);
+  digitalWrite(IN2, b);
+  digitalWrite(IN3, c);
+  digitalWrite(IN4, d);
+}
+
+void liberarMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void moverPasos(int pasos, int delayMs = 2) {
+  for (int i = 0; i < pasos; i++) {
+    for (int j = 0; j < 8; j++) {
+      aplicarPaso(
+        stepsSequence[j][0],
+        stepsSequence[j][1],
+        stepsSequence[j][2],
+        stepsSequence[j][3]
+      );
+      delay(delayMs);
+    }
+  }
+  liberarMotor();
+}
+
+// Ajuste este número según su mecanismo real
+void dispensarUnaPastilla() {
+  moverPasos(34, 2);
+  delay(800);
+}
+
+void dispensarCantidad(int cantidad) {
+  Serial.print("Dispensando cantidad: ");
+  Serial.println(cantidad);
+
+  for (int i = 0; i < cantidad; i++) {
+    dispensarUnaPastilla();
+    delay(2000);
+  }
+}
+
+// ===== CORS =====
+void agregarCors() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+}
+
+void responderTexto(int codigo, const String& texto) {
+  agregarCors();
+  server.send(codigo, "text/plain", texto);
+}
+
+void responderJson(int codigo, const String& texto) {
+  agregarCors();
+  server.send(codigo, "application/json", texto);
+}
+
+void handleOptions() {
+  agregarCors();
+  server.send(204);
+}
+
+// ===== RUTAS BASICAS =====
+void handleRoot() {
+  responderTexto(200, "ESP32 activo");
+}
+
+void handleEstado() {
+  DynamicJsonDocument doc(4096);
+
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char buffer[20];
+    strftime(buffer, sizeof(buffer), "%H:%M:%S", &timeinfo);
+    doc["hora_actual"] = String(buffer);
+  } else {
+    doc["hora_actual"] = "sin_hora";
+  }
+
+  JsonArray arr = doc.createNestedArray("compartimientos");
+
+  for (int i = 1; i <= MAX_COMPARTIMIENTOS; i++) {
+    if (!meds[i].activo) continue;
+
+    JsonObject item = arr.createNestedObject();
+    item["compartimiento"] = meds[i].compartimiento;
+    item["nombre"] = meds[i].nombre;
+    item["cantidadPastillas"] = meds[i].cantidadPastillas;
+    item["frecuenciaHoras"] = meds[i].frecuenciaHoras;
+    item["totalPastillasCargadas"] = meds[i].totalPastillasCargadas;
+    item["pastillasRestantes"] = meds[i].pastillasRestantes;
+    item["horaBase"] = meds[i].horaBase;
+    item["minutoBase"] = meds[i].minutoBase;
+    item["ultimoEpochDispensado"] = meds[i].ultimoEpochDispensado;
+  }
+
+  String resp;
+  serializeJson(doc, resp);
+  responderJson(200, resp);
+}
+
+// ===== RECIBE CONFIGURACION DESDE LA APP =====
+void handleConfigurar() {
+  if (!server.hasArg("plain")) {
+    responderJson(400, "{\"ok\":false,\"error\":\"Falta body JSON\"}");
+    return;
+  }
+
+  String body = server.arg("plain");
+  DynamicJsonDocument doc(2048);
+  DeserializationError error = deserializeJson(doc, body);
+
+  if (error) {
+    responderJson(400, "{\"ok\":false,\"error\":\"JSON invalido\"}");
+    return;
+  }
+
+  int compartimiento = doc["compartimiento"] | 0;
+  String nombre = doc["nombre"] | "";
+  int cantidadPastillas = doc["cantidadPastillas"] | 1;
+  int frecuenciaHoras = doc["frecuenciaHoras"] | 4;
+  int totalPastillasCargadas = doc["totalPastillasCargadas"] | 0;
+  int pastillasRestantes = doc["pastillasRestantes"] | 0;
+  int hora = doc["horaPrimeraDosis"]["hour"] | 0;
+  int minuto = doc["horaPrimeraDosis"]["minute"] | 0;
+
+  if (compartimiento < 1 || compartimiento > MAX_COMPARTIMIENTOS) {
+    responderJson(400, "{\"ok\":false,\"error\":\"Compartimiento invalido\"}");
+    return;
+  }
+
+  if (nombre.length() == 0) {
+    responderJson(400, "{\"ok\":false,\"error\":\"Nombre vacio\"}");
+    return;
+  }
+
+  meds[compartimiento].activo = true;
+  meds[compartimiento].compartimiento = compartimiento;
+  meds[compartimiento].nombre = nombre;
+  meds[compartimiento].cantidadPastillas = cantidadPastillas;
+  meds[compartimiento].frecuenciaHoras = frecuenciaHoras;
+  meds[compartimiento].totalPastillasCargadas = totalPastillasCargadas;
+  meds[compartimiento].pastillasRestantes = pastillasRestantes;
+  meds[compartimiento].horaBase = hora;
+  meds[compartimiento].minutoBase = minuto;
+  meds[compartimiento].ultimoEpochDispensado = -1;
+
+  Serial.println("=== NUEVA CONFIGURACION RECIBIDA ===");
+  Serial.print("Compartimiento: ");
+  Serial.println(compartimiento);
+  Serial.print("Nombre: ");
+  Serial.println(nombre);
+  Serial.print("Cantidad por toma: ");
+  Serial.println(cantidadPastillas);
+  Serial.print("Frecuencia horas: ");
+  Serial.println(frecuenciaHoras);
+  Serial.print("Pastillas restantes: ");
+  Serial.println(pastillasRestantes);
+  Serial.print("Hora base: ");
+  Serial.print(hora);
+  Serial.print(":");
+  if (minuto < 10) Serial.print("0");
+  Serial.println(minuto);
+
+  responderJson(200, "{\"ok\":true,\"mensaje\":\"Configurado correctamente\"}");
+}
+
+// ===== RECIBE CONFIRMACION DESDE LA APP =====
+void handleConfirmarToma() {
+  if (!server.hasArg("plain")) {
+    responderJson(400, "{\"ok\":false,\"error\":\"Falta body JSON\"}");
+    return;
+  }
+
+  String body = server.arg("plain");
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, body);
+
+  if (error) {
+    responderJson(400, "{\"ok\":false,\"error\":\"JSON invalido\"}");
+    return;
+  }
+
+  int compartimiento = doc["compartimiento"] | 0;
+  int pastillasRestantes = doc["pastillasRestantes"] | -1;
+
+  if (compartimiento < 1 || compartimiento > MAX_COMPARTIMIENTOS) {
+    responderJson(400, "{\"ok\":false,\"error\":\"Compartimiento invalido\"}");
+    return;
+  }
+
+  if (!meds[compartimiento].activo) {
+    responderJson(404, "{\"ok\":false,\"error\":\"Compartimiento no configurado\"}");
+    return;
+  }
+
+  if (pastillasRestantes >= 0) {
+    meds[compartimiento].pastillasRestantes = pastillasRestantes;
+  }
+
+  Serial.println("=== CONFIRMACION DE TOMA RECIBIDA ===");
+  Serial.print("Compartimiento: ");
+  Serial.println(compartimiento);
+  Serial.print("Pastillas restantes actualizadas a: ");
+  Serial.println(meds[compartimiento].pastillasRestantes);
+
+  responderJson(200, "{\"ok\":true,\"mensaje\":\"Confirmacion recibida\"}");
+}
+
+// ===== WIFI =====
+void conectarWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi conectado");
+  Serial.print("IP del ESP32: ");
+  Serial.println(WiFi.localIP());
+}
+
+// ===== HORA =====
+void configurarHora() {
+  configTime(-5 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+
+  struct tm timeinfo;
+  Serial.print("Sincronizando hora");
+  while (!getLocalTime(&timeinfo)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.println("Hora sincronizada");
+}
+
+// ===== REVISION DE PROGRAMACIONES =====
+bool yaSeDispensoEnEsteMinuto(long ultimoEpoch, long ahoraEpoch) {
+  if (ultimoEpoch < 0) return false;
+  long diferencia = ahoraEpoch - ultimoEpoch;
+  return diferencia >= 0 && diferencia < 60;
+}
+
+void revisarProgramacion() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return;
+
+  time_t now;
+  time(&now);
+  long ahoraEpoch = (long)now;
+
+  int minutosActuales = (timeinfo.tm_hour * 60) + timeinfo.tm_min;
+
+  for (int i = 1; i <= MAX_COMPARTIMIENTOS; i++) {
+    if (!meds[i].activo) continue;
+    if (meds[i].pastillasRestantes < meds[i].cantidadPastillas) continue;
+
+    int minutosBase = (meds[i].horaBase * 60) + meds[i].minutoBase;
+    int frecuenciaMinutos = meds[i].frecuenciaHoras * 60;
+    int diferencia = minutosActuales - minutosBase;
+
+    if (diferencia < 0) continue;
+    if (frecuenciaMinutos <= 0) continue;
+    if (diferencia % frecuenciaMinutos != 0) continue;
+    if (yaSeDispensoEnEsteMinuto(meds[i].ultimoEpochDispensado, ahoraEpoch)) continue;
+
+    Serial.println("=== HORA COINCIDIO, DISPENSANDO ===");
+    Serial.print("Compartimiento: ");
+    Serial.println(i);
+    Serial.print("Medicamento: ");
+    Serial.println(meds[i].nombre);
+    Serial.print("Cantidad: ");
+    Serial.println(meds[i].cantidadPastillas);
+
+    dispensarCantidad(meds[i].cantidadPastillas);
+
+    meds[i].pastillasRestantes -= meds[i].cantidadPastillas;
+    if (meds[i].pastillasRestantes < 0) {
+      meds[i].pastillasRestantes = 0;
+    }
+
+    meds[i].ultimoEpochDispensado = ahoraEpoch;
+
+    Serial.print("Pastillas restantes luego de dispensar: ");
+    Serial.println(meds[i].pastillasRestantes);
+  }
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  liberarMotor();
+
+  conectarWiFi();
+  configurarHora();
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/estado", HTTP_GET, handleEstado);
+  server.on("/configurar", HTTP_POST, handleConfigurar);
+  server.on("/confirmar-toma", HTTP_POST, handleConfirmarToma);
+
+  server.on("/", HTTP_OPTIONS, handleOptions);
+  server.on("/estado", HTTP_OPTIONS, handleOptions);
+  server.on("/configurar", HTTP_OPTIONS, handleOptions);
+  server.on("/confirmar-toma", HTTP_OPTIONS, handleOptions);
+
+  server.begin();
+  Serial.println("Servidor HTTP iniciado");
+}
+
+// ===== LOOP =====
+void loop() {
+  server.handleClient();
+  revisarProgramacion();
+  delay(200);
+}
