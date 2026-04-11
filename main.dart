@@ -1,8 +1,68 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
 runApp(const DocApp());
+}
+
+const String esp32BaseUrl = 'http://192.168.0.8';
+
+Future<void> enviarMedicamentoAlESP32({
+  required int compartimiento,
+  required MedicationData medicamento,
+}) async {
+  final url = Uri.parse('$esp32BaseUrl/configurar');
+
+  final body = {
+    'compartimiento': 1,
+    'nombre': medicamento.nombre,
+    'cantidadPastillas': medicamento.cantidadPastillas,
+    'frecuenciaHoras': medicamento.frecuenciaHoras,
+    'totalPastillasCargadas': medicamento.totalPastillasCargadas,
+    'pastillasRestantes': medicamento.pastillasRestantes,
+    'horaPrimeraDosis': {
+      'hour': medicamento.primeraDosis.hour,
+      'minute': medicamento.primeraDosis.minute,
+    },
+    'proximaDosis': medicamento.proximaDosis.toIso8601String(),
+  };
+
+  final response = await http.post(
+    url,
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode(body),
+  );
+
+  if (response.statusCode != 200) {
+    throw Exception('No se pudo enviar la configuración al ESP32');
+  }
+}
+
+Future<void> notificarTomaConfirmadaAlESP32({
+  required int compartimiento,
+  required MedicationData medicamento,
+}) async {
+  final url = Uri.parse('$esp32BaseUrl/confirmar-toma');
+
+  final body = {
+    'compartimiento': 1,
+    'nombre': medicamento.nombre,
+    'cantidadPastillas': medicamento.cantidadPastillas,
+    'pastillasRestantes': medicamento.pastillasRestantes,
+    'proximaDosis': medicamento.proximaDosis.toIso8601String(),
+  };
+
+  final response = await http.post(
+    url,
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode(body),
+  );
+
+  if (response.statusCode != 200) {
+    throw Exception('No se pudo notificar la toma al ESP32');
+  }
 }
 
 String dosDigitos(int numero) {
@@ -658,7 +718,7 @@ fontWeight: FontWeight.w700,
 const SizedBox(height: 8),
 TextField(
 controller: nombreController,
-decoration: buildDecoration('Ej: Carlos Peña'),
+decoration: buildDecoration('Ej: Mario Lopez'),
 ),
 const SizedBox(height: 14),
 const Text(
@@ -1470,40 +1530,58 @@ _mostrandoDialogoAlarma = false;
 }
 
 Future<void> confirmarProximaToma() async {
-if (!puedeConfirmarProximaToma()) return;
-if (!hayPastillasSuficientesParaProximaToma()) return;
+  if (!puedeConfirmarProximaToma()) return;
+  if (!hayPastillasSuficientesParaProximaToma()) return;
 
-final proximos = obtenerMedicamentosProximaToma();
+  final proximos = obtenerMedicamentosProximaToma();
 
-if (proximos.isEmpty) return;
+  if (proximos.isEmpty) return;
 
-setState(() {
-for (final entry in proximos) {
-final medicamento = entry.value;
+  setState(() {
+    for (final entry in proximos) {
+      final medicamento = entry.value;
 
-final nuevasRestantes =
-medicamento.pastillasRestantes - medicamento.cantidadPastillas;
+      final nuevasRestantes =
+          medicamento.pastillasRestantes - medicamento.cantidadPastillas;
 
-medicamentosPorCompartimiento[entry.key] = medicamento.copyWith(
-pastillasRestantes: nuevasRestantes < 0 ? 0 : nuevasRestantes,
-proximaDosis: medicamento.proximaDosis.add(
-Duration(hours: medicamento.frecuenciaHoras),
-),
-);
-}
-});
+      medicamentosPorCompartimiento[entry.key] = medicamento.copyWith(
+        pastillasRestantes: nuevasRestantes < 0 ? 0 : nuevasRestantes,
+        proximaDosis: medicamento.proximaDosis.add(
+          Duration(hours: medicamento.frecuenciaHoras),
+        ),
+      );
+    }
+  });
 
-ScaffoldMessenger.of(context).showSnackBar(
-SnackBar(
-content: Text(
-proximos.length == 1 ? 'Toma confirmada' : 'Tomas confirmadas',
-),
-),
-);
+  try {
+    for (final entry in proximos) {
+      final actualizado = medicamentosPorCompartimiento[entry.key];
+      if (actualizado != null) {
+        await notificarTomaConfirmadaAlESP32(
+          compartimiento: entry.key,
+          medicamento: actualizado,
+        );
+      }
+    }
 
-WidgetsBinding.instance.addPostFrameCallback((_) {
-revisarAvisosDeStock();
-});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          proximos.length == 1 ? 'Toma confirmada' : 'Tomas confirmadas',
+        ),
+      ),
+    );
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('La toma se confirmó en la app, pero falló el aviso al ESP32: $e'),
+      ),
+    );
+  }
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    revisarAvisosDeStock();
+  });
 }
 
 Widget buildContenido() {
@@ -2411,71 +2489,85 @@ color: Colors.black,
 );
 }
 
-void guardar() {
-final nombre = nombreController.text.trim();
-final textoHora = horaController.text.trim();
-final textoTotalPastillas = totalPastillasController.text.trim();
+Future<void> guardar() async {
+  final nombre = nombreController.text.trim();
+  final textoHora = horaController.text.trim();
+  final textoTotalPastillas = totalPastillasController.text.trim();
 
-final TimeOfDay? horaBase = parsearHoraManual(textoHora);
-final int? totalPastillas = int.tryParse(textoTotalPastillas);
+  final TimeOfDay? horaBase = parsearHoraManual(textoHora);
+  final int? totalPastillas = int.tryParse(textoTotalPastillas);
 
-if (nombre.isEmpty) {
-ScaffoldMessenger.of(context).showSnackBar(
-const SnackBar(
-content: Text('Escriba el nombre del medicamento.'),
-),
-);
-return;
-}
+  if (nombre.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Escriba el nombre del medicamento.'),
+      ),
+    );
+    return;
+  }
 
-if (horaBase == null) {
-ScaffoldMessenger.of(context).showSnackBar(
-const SnackBar(
-content: Text('Escriba la hora con formato como 6:30 PM.'),
-),
-);
-return;
-}
+  if (horaBase == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Escriba la hora con formato como 6:30 PM.'),
+      ),
+    );
+    return;
+  }
 
-if (totalPastillas == null || totalPastillas <= 0) {
-ScaffoldMessenger.of(context).showSnackBar(
-const SnackBar(
-content: Text('Escriba cuántas pastillas va a meter en total.'),
-),
-);
-return;
-}
+  if (totalPastillas == null || totalPastillas <= 0) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Escriba cuántas pastillas va a meter en total.'),
+      ),
+    );
+    return;
+  }
 
-if (totalPastillas < cantidadSeleccionada) {
-ScaffoldMessenger.of(context).showSnackBar(
-const SnackBar(
-content: Text(
-'Las pastillas cargadas no pueden ser menores que las pastillas por toma.',
-),
-),
-);
-return;
-}
+  if (totalPastillas < cantidadSeleccionada) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Las pastillas cargadas no pueden ser menores que las pastillas por toma.',
+        ),
+      ),
+    );
+    return;
+  }
 
-final DateTime hoy = DateUtils.dateOnly(DateTime.now());
-final DateTime primeraDosis = combinarFechaYHora(hoy, horaBase);
-final DateTime proximaDosis = calcularProximaDosisDesdeHoraBase(
-horaBase: horaBase,
-frecuenciaHoras: frecuenciaSeleccionada,
-);
+  final DateTime hoy = DateUtils.dateOnly(DateTime.now());
+  final DateTime primeraDosis = combinarFechaYHora(hoy, horaBase);
+  final DateTime proximaDosis = calcularProximaDosisDesdeHoraBase(
+    horaBase: horaBase,
+    frecuenciaHoras: frecuenciaSeleccionada,
+  );
 
-Navigator.pop(
-context,
-MedicationData(
-nombre: nombre,
-cantidadPastillas: cantidadSeleccionada,
-frecuenciaHoras: frecuenciaSeleccionada,
-totalPastillasCargadas: totalPastillas,
-pastillasRestantes: totalPastillas,
-primeraDosis: primeraDosis,
-proximaDosis: proximaDosis,
-),
-);
+  final medicamento = MedicationData(
+    nombre: nombre,
+    cantidadPastillas: cantidadSeleccionada,
+    frecuenciaHoras: frecuenciaSeleccionada,
+    totalPastillasCargadas: totalPastillas,
+    pastillasRestantes: totalPastillas,
+    primeraDosis: primeraDosis,
+    proximaDosis: proximaDosis,
+  );
+
+  try {
+    await enviarMedicamentoAlESP32(
+      compartimiento: widget.numeroCompartimiento,
+      medicamento: medicamento,
+    );
+
+    if (!mounted) return;
+    Navigator.pop(context, medicamento);
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('No se pudo enviar al ESP32: $e'),
+      ),
+    );
+  }
 }
 
 @override
